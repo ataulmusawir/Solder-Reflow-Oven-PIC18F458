@@ -76,15 +76,6 @@ This output can be visualized on a PC using Python and Matplotlib.
 
 ---
 
-## 👨‍💻 Authors
-
-Developed as part of the *Microprocessor Systems* course by a two-member team.
-
----
-
-## 📜 License
-
-This project is intended for educational and non-commercial use. Add a `LICENSE` file if you wish to apply an open-source license.
 
 ---
 

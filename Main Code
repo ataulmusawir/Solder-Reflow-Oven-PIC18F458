@@ -1,0 +1,255 @@
+// PIC18F458 Configuration Bit Settings
+
+// 'C' source line config statements
+
+// CONFIG1H
+#pragma config OSC = HS         // Oscillator Selection bits (HS oscillator)
+#pragma config OSCS = OFF       // Oscillator System Clock Switch Enable bit (Oscillator system clock switch option is disabled (main oscillator is source))
+
+// CONFIG2L
+#pragma config PWRT = ON        // Power-up Timer Enable bit (PWRT enabled)
+#pragma config BOR = ON         // Brown-out Reset Enable bit (Brown-out Reset enabled)
+#pragma config BORV = 25        // Brown-out Reset Voltage bits (VBOR set to 2.5V)
+
+// CONFIG2H
+#pragma config WDT = OFF        // Watchdog Timer Enable bit (WDT disabled (control is placed on the SWDTEN bit))
+#pragma config WDTPS = 128      // Watchdog Timer Postscale Select bits (1:128)
+
+// CONFIG4L
+#pragma config STVR = ON        // Stack Full/Underflow Reset Enable bit (Stack Full/Underflow will cause Reset)
+#pragma config LVP = OFF        // Low-Voltage ICSP Enable bit (Low-Voltage ICSP disabled)
+
+// CONFIG5L
+#pragma config CP0 = OFF        // Code Protection bit (Block 0 (000200-001FFFh) not code protected)
+#pragma config CP1 = OFF        // Code Protection bit (Block 1 (002000-003FFFh) not code protected)
+#pragma config CP2 = OFF        // Code Protection bit (Block 2 (004000-005FFFh) not code protected)
+#pragma config CP3 = OFF        // Code Protection bit (Block 3 (006000-007FFFh) not code protected)
+
+// CONFIG5H
+#pragma config CPB = OFF        // Boot Block Code Protection bit (Boot Block (000000-0001FFh) not code protected)
+#pragma config CPD = OFF        // Data EEPROM Code Protection bit (Data EEPROM not code protected)
+
+// CONFIG6L
+#pragma config WRT0 = OFF       // Write Protection bit (Block 0 (000200-001FFFh) not write protected)
+#pragma config WRT1 = OFF       // Write Protection bit (Block 1 (002000-003FFFh) not write protected)
+#pragma config WRT2 = OFF       // Write Protection bit (Block 2 (004000-005FFFh) not write protected)
+#pragma config WRT3 = OFF       // Write Protection bit (Block 3 (006000-007FFFh) not write protected)
+
+// CONFIG6H
+#pragma config WRTC = OFF       // Configuration Register Write Protection bit (Configuration registers (300000-3000FFh) not write protected)
+#pragma config WRTB = OFF       // Boot Block Write Protection bit (Boot Block (000000-0001FFh) not write protected)
+#pragma config WRTD = OFF       // Data EEPROM Write Protection bit (Data EEPROM not write protected)
+
+// CONFIG7L
+#pragma config EBTR0 = OFF      // Table Read Protection bit (Block 0 (000200-001FFFh) not protected from Table Reads executed in other blocks)
+#pragma config EBTR1 = OFF      // Table Read Protection bit (Block 1 (002000-003FFFh) not protected from Table Reads executed in other blocks)
+#pragma config EBTR2 = OFF      // Table Read Protection bit (Block 2 (004000-005FFFh) not protected from Table Reads executed in other blocks)
+#pragma config EBTR3 = OFF      // Table Read Protection bit (Block 3 (006000-007FFFh) not protected from Table Reads executed in other blocks)
+
+// CONFIG7H
+#pragma config EBTRB = OFF      // Boot Block Table Read Protection bit (Boot Block (000000-0001FFh) not protected from Table Reads executed in other blocks)
+
+// #pragma config statements should precede project file includes.
+// Use project enums instead of #define for ON and OFF.
+
+
+// PIC18F458 Configuration Bit Settings (unchanged)
+
+#include <xc.h>
+#include <stdio.h>
+
+// Temperature profile array for the reflow oven process
+float temp_profile[48] = {
+    25, 32.22, 39.44, 46.66, 53.88, 61.10, 68.32, 75.54, 82.76, 89.98, 97.20, 104.42, 111.64, 118.86, 126.08, 133.30, 140.52, 147.74, 154.96,
+    156.62, 158.28, 159.94, 161.60, 163.26, 164.92, 166.58, 168.24, 169.90, 171.56, 173.22, 174.88, 176.54, 178.20, 179.86, 181.52, 183.18, 184.84,
+    191.32, 197.80, 204.28, 210.76, 217.24, 223.72,
+    217.24, 210.76, 204.28, 197.80, 191.32
+};
+
+// Global variables
+unsigned char current_temp = 0, elapsed_time = 0, heater_duty = 0, fan_duty = 0;
+int interrupt_counter = 0;
+float duty_cycle = 0;
+
+// Function declarations
+void init_timer0();
+unsigned int read_temperature();
+void delay_microseconds(unsigned char us);
+unsigned char calculate_heater_pwm(float target, unsigned char current);
+unsigned char calculate_fan_pwm(float target, unsigned char current);
+void generate_pwm(unsigned char duty);
+void init_uart(); 
+void uart_send_char(char data);
+void uart_send_string(const char *text);
+void uart_send_data(unsigned char time, unsigned int temperature);
+
+// Interrupt Service Routine
+void __interrupt() ISR(void)
+{
+    if (TMR0IF)
+    {
+        interrupt_counter++;
+        if (interrupt_counter <= 49) {
+            current_temp = read_temperature();
+            LATA = ~LATA; // Toggle output
+            LATD = current_temp; // Output temperature to port D
+
+            calculate_heater_pwm(temp_profile[interrupt_counter], current_temp);
+            if (duty_cycle < 100) {
+                RC0 = 1;
+                generate_pwm(duty_cycle);
+            }
+            if (duty_cycle < 0) {
+                RC0 = 0;
+                generate_pwm(duty_cycle);
+            }
+
+            uart_send_data(elapsed_time, current_temp);
+
+            // Reload Timer0 for next 5s interval
+            TMR0H = 0xE1;
+            TMR0L = 0x67;
+            TMR0IF = 0;
+
+            elapsed_time++;
+        }
+        if (interrupt_counter > 49) {
+            interrupt_counter = 0;
+        }
+    }
+}
+
+void main(void)
+{
+    // Configure all ports
+    TRISA = 0x00; PORTA = 0x00;
+    TRISB = 0x00; LATB = 0x00;
+    TRISC = 0x00; LATC = 0x00;
+    TRISD = 0x00; LATD = 0x00;
+
+    TRISB0 = 1; // Set RB0 as input for MAX6675 data
+
+    init_timer0();
+    init_uart();
+
+    while (elapsed_time < 48) {
+        // Wait while ISR handles the main logic
+    }
+}
+
+// Initialize Timer0 for periodic interrupt
+void init_timer0()
+{
+    T0CON = 0b00000111; // Timer0 config: 16-bit, prescaler 256
+    TMR0H = 0xE1;
+    TMR0L = 0x67;
+    INTCONbits.TMR0IF = 0;
+    INTCONbits.TMR0IE = 1;
+    INTCONbits.PEIE = 1;
+    INTCONbits.GIE = 1;
+    T0CONbits.TMR0ON = 1;
+}
+
+// Read temperature from MAX6675 sensor
+unsigned int read_temperature()
+{
+    unsigned int result = 0;
+    LATB2 = 0; // CS Low
+    delay_microseconds(10);
+
+    for (int i = 0; i < 16; i++) {
+        LATB4 = 1; // SCK High
+        delay_microseconds(1);
+        result <<= 1;
+        if (RB0 == 1) {
+            result |= 1;
+        }
+        LATB4 = 0; // SCK Low
+        delay_microseconds(1);
+    }
+    LATB2 = 1; // CS High
+
+    if (result & 0x0004) {
+        return 0xFFFF; // Error in thermocouple
+    }
+    return (result >> 5);
+}
+
+// Generate delay in microseconds using Timer1
+void delay_microseconds(unsigned char us)
+{
+    for (int i = 0; i < us; i++) {
+        T1CONbits.TMR1ON = 0;
+        TMR1H = 0xFF;
+        TMR1L = 0xFE;
+        TMR1IF = 0;
+        T1CON = 0b00110001; // Prescaler 8, Timer1 ON
+        while (!TMR1IF);
+        T1CONbits.TMR1ON = 0;
+        TMR1IF = 0;
+    }
+}
+
+// Calculate heater PWM using proportional control
+unsigned char calculate_heater_pwm(float target, unsigned char current)
+{
+    float Kp = 2.0;
+    float error = target - current;
+    duty_cycle = Kp * error;
+    return (unsigned char)duty_cycle;
+}
+
+// Generate PWM signal using CCP1
+void generate_pwm(unsigned char duty)
+{
+    if (duty > 100) duty = 100;
+    else if (duty < 0) duty = 0;
+
+    CCP1CON = 0b00001100; // PWM mode
+    PR2 = 249;
+
+    unsigned int pwm_val = (duty * 1023.0) / 100.0;
+    CCPR1L = pwm_val >> 2;
+    CCP1CONbits.DC1B = pwm_val & 0x03;
+
+    T2CON = 0b00000111; // Timer2 ON, prescaler 16
+    while (!PIR1bits.TMR2IF);
+    PIR1bits.TMR2IF = 0;
+}
+
+// Initialize UART for 9600 baud @ 8 MHz
+void init_uart()
+{
+    TRISC6 = 0;     // TX pin set as output
+    TRISC7 = 1;     // RX pin set as input
+    SPBRG  = 51;    // Baud rate setting for 9600 with 8MHz clock
+    BRGH   = 1;     // High-speed baud rate
+    SYNC   = 0;     // Asynchronous mode
+    SPEN   = 1;     // Enable serial port (TX/RX)
+    TXEN   = 1;     // Enable transmission
+    CREN   = 1;     // Enable continuous reception
+}
+
+// Send single character over UART
+void uart_send_char(char data)
+{
+    while (!TXIF);  // Wait until transmit buffer is empty
+    TXREG = data;   // Load data into transmit register
+}
+
+// Send null-terminated string over UART
+void uart_send_string(const char *text)
+{
+    while (*text)
+    {
+        uart_send_char(*text++);  // Send each character one by one
+    }
+}
+
+// Send formatted temperature and time data over UART
+void uart_send_data(unsigned char time, unsigned int temperature)
+{
+    char buffer[32];
+    sprintf(buffer, "Time: %u, Temp: %u\r\n", time, temperature);
+    uart_send_string(buffer);
+}
